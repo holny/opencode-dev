@@ -169,6 +169,7 @@ export type SessionDomain = Pick<
   | "move"
   | "wait"
   | "context"
+  | "form"
 > & {
   readonly hook: ModelHooks<SessionHooks>
 }
