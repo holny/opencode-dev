@@ -1,5 +1,5 @@
 import { Script, constants } from "node:vm"
-import { registerHooks } from "node:module"
+import { createRequire, registerHooks } from "node:module"
 import { statSync } from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
@@ -21,14 +21,23 @@ export function resolveModule(specifier: string, directory: string) {
   // Node only accepts import.meta.resolve's parent URL behind an experimental
   // flag. Scope this synchronous resolution to the caller's package directory
   // through the supported resolver hook instead.
-  const hook = registerHooks({
-    resolve(specifier, context, nextResolve) {
-      return nextResolve(specifier, { ...context, parentURL: pathToFileURL(path.join(directory, "package.json")).href })
-    },
-  })
+  // SEA (mainFormat "module") evaluates the main ESM without exposing
+  // import.meta.resolve at all; fall back to CJS resolution rooted at the
+  // caller's package directory.
+  const native = typeof import.meta.resolve === "function"
+  const resolveOne = native
+    ? (target: string) => import.meta.resolve(path.isAbsolute(target) ? pathToFileURL(target).href : target)
+    : (target: string) => pathToFileURL(createRequire(path.join(directory, "package.json")).resolve(target)).href
+  const hook = native
+    ? registerHooks({
+        resolve(specifier, context, nextResolve) {
+          return nextResolve(specifier, { ...context, parentURL: pathToFileURL(path.join(directory, "package.json")).href })
+        },
+      })
+    : undefined
   try {
     const resolve = (target: string) => {
-      const resolved = import.meta.resolve(path.isAbsolute(target) ? pathToFileURL(target).href : target)
+      const resolved = resolveOne(target)
       if (resolved.startsWith("file:")) statSync(new URL(resolved))
       return resolved
     }
@@ -48,7 +57,7 @@ export function resolveModule(specifier: string, directory: string) {
       throw error
     }
   } finally {
-    hook.deregister()
+    hook?.deregister()
   }
 }
 
@@ -56,6 +65,7 @@ function missing(error: unknown) {
   return (
     error instanceof Error &&
     "code" in error &&
-    ["ENOENT", "ENOTDIR", "ERR_MODULE_NOT_FOUND"].includes(String(error.code))
+    // MODULE_NOT_FOUND is the CJS resolver's code (the SEA fallback path).
+    ["ENOENT", "ENOTDIR", "MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND"].includes(String(error.code))
   )
 }
